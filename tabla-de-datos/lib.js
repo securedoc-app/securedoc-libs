@@ -1,637 +1,587 @@
-/* Tabla de Datos — Web Component <data-table>
- * Librería visual reutilizable en JavaScript puro (sin framework, sin build).
- * No lee ni escribe datos por su cuenta: solo muestra lo que le pasas y avisa
- * de las interacciones mediante eventos. Hereda los estilos Bootstrap 5 de la
- * página que la carga (no usa Shadow DOM).
+/*
+ * Tabla de Datos — Librería reutilizable (Web Component nativo)
+ * Etiqueta: <table-date>
+ *
+ * Componente de tabla interactiva: ordenar, filtrar/buscar, paginar,
+ * reordenar filas (arrastrar), importar y exportar. Cada capacidad se
+ * activa/desactiva por atributo. El componente NO lee ni guarda datos por
+ * su cuenta: recibe datos por propiedades JS y avisa de todo cambio con
+ * CustomEvent para que la app decida qué hacer.
+ *
+ * Sin Shadow DOM (hereda Bootstrap 5 de la app). Sin eval/Function,
+ * sin document.write, sin eventos inline, sin innerHTML con datos.
  */
-(function (global) {
+(function () {
   "use strict";
 
-  // Guard: si ya se definió el componente, no volver a registrarlo.
-  if (global.customElements && global.customElements.get("data-table")) {
-    return;
-  }
+  if (window.customElements && customElements.get("table-date")) return;
 
-  // ---- Utilidades internas (privadas, sin variables sueltas en global) ----
+  /* ---------- utilidades puras (dentro del ámbito privado) ---------- */
 
-  function toBool(value) {
-    // Un atributo booleano existe (aunque sea "") => activo; "false" => inactivo.
-    if (value === null || value === undefined) return false;
-    return String(value).toLowerCase() !== "false";
-  }
-
-  function isPlainArray(value) {
-    return Object.prototype.toString.call(value) === "[object Array]";
-  }
-
-  function safeText(value) {
-    if (value === null || value === undefined) return "";
-    if (typeof value === "object") {
-      try {
-        return JSON.stringify(value);
-      } catch (e) {
-        return String(value);
+  function el(tag, opts, children) {
+    var n = document.createElement(tag);
+    if (opts) {
+      if (opts.class) n.className = opts.class;
+      if (opts.text != null) n.textContent = String(opts.text);
+      if (opts.attrs) {
+        for (var a in opts.attrs) {
+          if (Object.prototype.hasOwnProperty.call(opts.attrs, a)) {
+            n.setAttribute(a, opts.attrs[a]);
+          }
+        }
+      }
+      if (opts.props) {
+        for (var p in opts.props) {
+          if (Object.prototype.hasOwnProperty.call(opts.props, p)) {
+            n[p] = opts.props[p];
+          }
+        }
+      }
+      if (opts.on) {
+        for (var ev in opts.on) {
+          if (Object.prototype.hasOwnProperty.call(opts.on, ev)) {
+            n.addEventListener(ev, opts.on[ev]);
+          }
+        }
       }
     }
-    return String(value);
+    if (children) {
+      for (var i = 0; i < children.length; i++) {
+        var c = children[i];
+        if (c == null || c === false) continue;
+        n.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+      }
+    }
+    return n;
   }
 
-  function el(tag, className) {
-    var node = document.createElement(tag);
-    if (className) node.className = className;
-    return node;
+  function isTrueAttr(host, name) {
+    if (!host.hasAttribute(name)) return false;
+    var v = host.getAttribute(name);
+    return v === "" || v === name || v === "true" || v === "1";
   }
 
-  function compareValues(a, b) {
-    // Comparación estable: números como números, resto como texto.
-    var na = parseFloat(a);
-    var nb = parseFloat(b);
-    var aNum = !isNaN(na) && String(a).trim() !== "" && isFinite(na);
-    var bNum = !isNaN(nb) && String(b).trim() !== "" && isFinite(nb);
-    if (aNum && bNum) {
+  function cellRaw(row, col) {
+    var v = row ? row[col.key] : undefined;
+    return v;
+  }
+
+  function cellText(row, col) {
+    var v = cellRaw(row, col);
+    if (typeof col.format === "function") {
+      try { return String(col.format(v, row)); } catch (e) { return ""; }
+    }
+    return v == null ? "" : String(v);
+  }
+
+  function compareValues(a, b, type) {
+    if (a == null && b == null) return 0;
+    if (a == null) return -1;
+    if (b == null) return 1;
+    if (type === "number") {
+      var na = parseFloat(a), nb = parseFloat(b);
+      na = isNaN(na) ? 0 : na; nb = isNaN(nb) ? 0 : nb;
       return na - nb;
     }
-    var sa = safeText(a).toLowerCase();
-    var sb = safeText(b).toLowerCase();
-    if (sa < sb) return -1;
-    if (sa > sb) return 1;
-    return 0;
+    if (type === "date") {
+      var da = new Date(a).getTime(), db = new Date(b).getTime();
+      da = isNaN(da) ? 0 : da; db = isNaN(db) ? 0 : db;
+      return da - db;
+    }
+    return String(a).localeCompare(String(b), undefined, {
+      numeric: true, sensitivity: "base"
+    });
   }
 
-  // CSV -> array de objetos (parser propio, sin eval).
+  function toCSV(cols, rows) {
+    function esc(v) {
+      var s = v == null ? "" : String(v);
+      return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    }
+    var out = [cols.map(function (c) {
+      return esc(c.label != null ? c.label : c.key);
+    }).join(",")];
+    for (var i = 0; i < rows.length; i++) {
+      out.push(cols.map(function (c) { return esc(rows[i][c.key]); }).join(","));
+    }
+    return out.join("\r\n");
+  }
+
   function parseCSV(text) {
-    var rows = [];
-    var row = [];
-    var field = "";
-    var inQuotes = false;
-    var i = 0;
-    var c;
-    var len = text.length;
-
-    function pushField() {
-      row.push(field);
-      field = "";
-    }
-    function pushRow() {
-      pushField();
-      rows.push(row);
-      row = [];
-    }
-
-    while (i < len) {
-      c = text.charAt(i);
-      if (inQuotes) {
+    var out = [], row = [], field = "", inq = false;
+    for (var i = 0; i < text.length; i++) {
+      var c = text[i];
+      if (inq) {
         if (c === '"') {
-          if (text.charAt(i + 1) === '"') {
-            field += '"';
-            i += 2;
-            continue;
-          }
-          inQuotes = false;
-          i++;
-          continue;
+          if (text[i + 1] === '"') { field += '"'; i++; }
+          else inq = false;
+        } else { field += c; }
+      } else {
+        if (c === '"') inq = true;
+        else if (c === ",") { row.push(field); field = ""; }
+        else if (c === "\n") { row.push(field); field = ""; out.push(row); row = []; }
+        else if (c === "\r") { /* ignora */ }
+        else field += c;
+      }
+    }
+    if (field !== "" || row.length) { row.push(field); out.push(row); }
+    return out;
+  }
+
+  function csvToObjects(text, cols) {
+    var rows = parseCSV(text);
+    if (!rows.length) return [];
+    var header = rows[0];
+    // mapea cada cabecera a una key de columna (por label o por key)
+    var keys = header.map(function (h) {
+      var hh = String(h).trim();
+      for (var j = 0; j < cols.length; j++) {
+        if (String(cols[j].label) === hh || String(cols[j].key) === hh) {
+          return cols[j].key;
         }
-        field += c;
-        i++;
-        continue;
       }
-      if (c === '"') {
-        inQuotes = true;
-        i++;
-        continue;
-      }
-      if (c === ",") {
-        pushField();
-        i++;
-        continue;
-      }
-      if (c === "\r") {
-        i++;
-        continue;
-      }
-      if (c === "\n") {
-        pushRow();
-        i++;
-        continue;
-      }
-      field += c;
-      i++;
-    }
-    // Último campo/fila si el texto no termina en salto de línea.
-    if (field !== "" || row.length > 0) {
-      pushRow();
-    }
-
-    // Quitar filas totalmente vacías.
-    rows = rows.filter(function (r) {
-      return !(r.length === 1 && r[0] === "");
+      return hh;
     });
-    if (rows.length === 0) return [];
-
-    var headers = rows.shift();
-    return rows.map(function (r) {
-      var obj = {};
-      for (var k = 0; k < headers.length; k++) {
-        obj[headers[k]] = r[k] !== undefined ? r[k] : "";
+    var res = [];
+    for (var r = 1; r < rows.length; r++) {
+      var o = {}, line = rows[r], empty = true;
+      for (var k = 0; k < keys.length; k++) {
+        o[keys[k]] = line[k] != null ? line[k] : "";
+        if (o[keys[k]] !== "") empty = false;
       }
-      return obj;
-    });
+      if (!empty) res.push(o);
+    }
+    return res;
   }
 
-  // array de objetos -> CSV (escapando comillas y separadores).
-  function toCSV(data, columns) {
-    var keys = columns.map(function (col) {
-      return col.key;
-    });
-    function escape(v) {
-      var s = safeText(v);
-      if (/[",\n\r]/.test(s)) {
-        return '"' + s.replace(/"/g, '""') + '"';
-      }
-      return s;
+  function download(filename, content, mime) {
+    try {
+      var blob = new Blob([content], { type: mime || "text/plain" });
+      var url = URL.createObjectURL(blob);
+      var a = el("a", { attrs: { href: url, download: filename } });
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+      return true;
+    } catch (e) {
+      return false;
     }
-    var lines = [];
-    lines.push(
-      columns
-        .map(function (col) {
-          return escape(col.label);
-        })
-        .join(",")
-    );
-    data.forEach(function (rowObj) {
-      lines.push(
-        keys
-          .map(function (key) {
-            return escape(rowObj[key]);
-          })
-          .join(",")
-      );
-    });
-    return lines.join("\r\n");
   }
 
-  function downloadBlob(content, filename, mime) {
-    var blob = new Blob([content], { type: mime });
-    var url = URL.createObjectURL(blob);
-    var a = el("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    // Liberar el objeto URL un poco después de disparar la descarga.
-    setTimeout(function () {
-      URL.revokeObjectURL(url);
-    }, 1000);
-  }
+  /* ----------------------- el Web Component ----------------------- */
 
-  // ---- Definición del Web Component ----
-
-  var DataTable = (function () {
-    function DataTableClass() {
-      var self = Reflect.construct(HTMLElement, [], DataTableClass);
-      // Estado interno (privado a la instancia).
-      self._data = [];
-      self._columns = [];
-      self._filterText = "";
-      self._sortKey = null;
-      self._sortDir = 1; // 1 asc, -1 desc
-      self._page = 1;
-      self._built = false;
-      self._els = {};
-      return self;
+  var TableDate = class extends HTMLElement {
+    static get observedAttributes() {
+      return [
+        "sortable", "searchable", "filterable", "paginated", "page-size",
+        "reorderable", "exportable", "importable",
+        "striped", "hover", "bordered", "size", "empty-text", "caption"
+      ];
     }
 
-    DataTableClass.prototype = Object.create(HTMLElement.prototype);
-    DataTableClass.prototype.constructor = DataTableClass;
+    constructor() {
+      super();
+      this._columns = [];
+      this._data = [];
+      this._sortKey = null;
+      this._sortDir = 0;        // 0 ninguno, 1 asc, -1 desc
+      this._search = "";
+      this._colFilters = {};
+      this._page = 1;
+      this._root = null;
+      this._dragItem = null;    // referencia al objeto fila arrastrado
+      this._ready = false;
+    }
 
-    Object.defineProperty(DataTableClass, "observedAttributes", {
-      get: function () {
-        return [
-          "sortable",
-          "filterable",
-          "paginate",
-          "page-size",
-          "exportable",
-          "importable"
-        ];
-      }
-    });
-
-    // ---- Propiedades JS ----
-
-    Object.defineProperty(DataTableClass.prototype, "data", {
-      get: function () {
-        return this._data.slice();
-      },
-      set: function (value) {
-        this._data = isPlainArray(value) ? value.slice() : [];
-        this._page = 1;
-        this._render();
-      }
-    });
-
-    Object.defineProperty(DataTableClass.prototype, "columns", {
-      get: function () {
-        return this._columns.slice();
-      },
-      set: function (value) {
-        this._columns = isPlainArray(value)
-          ? value.map(function (c) {
-              if (typeof c === "string") return { key: c, label: c };
-              return { key: c.key, label: c.label !== undefined ? c.label : c.key };
-            })
-          : [];
-        this._render();
-      }
-    });
-
-    // ---- Config leída desde atributos ----
-
-    DataTableClass.prototype._cfg = function () {
-      return {
-        sortable: toBool(this.getAttribute("sortable")),
-        filterable: toBool(this.getAttribute("filterable")),
-        paginate: toBool(this.getAttribute("paginate")),
-        pageSize: Math.max(1, parseInt(this.getAttribute("page-size"), 10) || 10),
-        exportable: toBool(this.getAttribute("exportable")),
-        importable: toBool(this.getAttribute("importable"))
-      };
-    };
-
-    // ---- Ciclo de vida ----
-
-    DataTableClass.prototype.connectedCallback = function () {
-      if (!this._built) {
-        this._build();
-        this._built = true;
-      }
-      // Si no se pasaron columnas y hay datos, deducirlas de las claves.
-      if (this._columns.length === 0 && this._data.length > 0) {
-        this._columns = Object.keys(this._data[0]).map(function (k) {
-          return { key: k, label: k };
-        });
-      }
+    /* ---- propiedades JS ---- */
+    get columns() { return this._columns.slice(); }
+    set columns(v) {
+      this._columns = Array.isArray(v) ? v.map(function (c) {
+        return typeof c === "string"
+          ? { key: c, label: c }
+          : {
+              key: c.key,
+              label: c.label != null ? c.label : c.key,
+              type: c.type || "string",
+              sortable: c.sortable !== false,
+              format: typeof c.format === "function" ? c.format : null,
+              align: c.align || null
+            };
+      }) : [];
+      this._colFilters = {};
       this._render();
-    };
+    }
 
-    DataTableClass.prototype.attributeChangedCallback = function () {
-      if (this._built) this._render();
-    };
+    get data() { return this._data.slice(); }
+    set data(v) {
+      this._data = Array.isArray(v) ? v.slice() : [];
+      this._page = 1;
+      this._render();
+    }
 
-    // ---- Construcción del esqueleto (una sola vez) ----
+    get pageSize() {
+      var n = parseInt(this.getAttribute("page-size"), 10);
+      return n > 0 ? n : 10;
+    }
+    set pageSize(n) { this.setAttribute("page-size", String(n)); }
 
-    DataTableClass.prototype._build = function () {
+    /* ---- ciclo de vida ---- */
+    connectedCallback() {
+      this._ready = true;
+      this._render();
+    }
+    attributeChangedCallback() {
+      if (this._ready) this._render();
+    }
+
+    /* ---- API pública cómoda ---- */
+    setData(cols, rows) {
+      if (cols) this.columns = cols;
+      if (rows) this.data = rows;
+    }
+    getVisibleRows() { return this._computeView().rows.slice(); }
+    clearFilters() {
+      this._search = ""; this._colFilters = {}; this._page = 1; this._render();
+    }
+
+    /* ---- lógica interna: filtrar -> ordenar -> paginar ---- */
+    _computeView() {
       var self = this;
+      var cols = this._columns;
+      var rows = this._data;
 
-      var toolbar = el("div", "d-flex flex-wrap gap-2 align-items-center mb-2");
-
-      // Buscador (filtro).
-      var searchWrap = el("div", "flex-grow-1");
-      var search = el("input", "form-control form-control-sm");
-      search.type = "search";
-      search.placeholder = "Buscar…";
-      search.setAttribute("aria-label", "Buscar en la tabla");
-      search.addEventListener("input", function () {
-        self._filterText = search.value || "";
-        self._page = 1;
-        self._render();
-        self._emit("filter", { filter: self._filterText });
-      });
-      searchWrap.appendChild(search);
-
-      // Botones importar / exportar.
-      var actions = el("div", "d-flex gap-2");
-
-      var importBtn = el("button", "btn btn-sm btn-outline-secondary");
-      importBtn.type = "button";
-      importBtn.textContent = "Importar";
-      var fileInput = el("input");
-      fileInput.type = "file";
-      fileInput.accept = ".csv,.json,application/json,text/csv";
-      fileInput.style.display = "none";
-      importBtn.addEventListener("click", function () {
-        fileInput.value = "";
-        fileInput.click();
-      });
-      fileInput.addEventListener("change", function () {
-        var file = fileInput.files && fileInput.files[0];
-        if (!file) return;
-        var reader = new FileReader();
-        reader.addEventListener("load", function () {
-          self._handleImport(String(reader.result || ""), file.name);
-        });
-        reader.addEventListener("error", function () {
-          self._emit("error", { message: "No se pudo leer el archivo." });
-        });
-        reader.readAsText(file);
-      });
-
-      var exportCsvBtn = el("button", "btn btn-sm btn-outline-secondary");
-      exportCsvBtn.type = "button";
-      exportCsvBtn.textContent = "Exportar CSV";
-      exportCsvBtn.addEventListener("click", function () {
-        self._exportCSV();
-      });
-
-      var exportJsonBtn = el("button", "btn btn-sm btn-outline-secondary");
-      exportJsonBtn.type = "button";
-      exportJsonBtn.textContent = "Exportar JSON";
-      exportJsonBtn.addEventListener("click", function () {
-        self._exportJSON();
-      });
-
-      actions.appendChild(importBtn);
-      actions.appendChild(exportCsvBtn);
-      actions.appendChild(exportJsonBtn);
-
-      toolbar.appendChild(searchWrap);
-      toolbar.appendChild(actions);
-
-      // Contenedor de la tabla.
-      var tableWrap = el("div", "table-responsive");
-      var table = el("table", "table table-sm table-striped table-hover align-middle mb-0");
-      var thead = el("thead");
-      var tbody = el("tbody");
-      table.appendChild(thead);
-      table.appendChild(tbody);
-      tableWrap.appendChild(table);
-
-      // Pie: info + paginación.
-      var footer = el("div", "d-flex flex-wrap justify-content-between align-items-center mt-2 gap-2");
-      var info = el("small", "text-muted");
-      var pager = el("nav");
-      var pagerList = el("ul", "pagination pagination-sm mb-0");
-      pager.appendChild(pagerList);
-      footer.appendChild(info);
-      footer.appendChild(pager);
-
-      this.appendChild(toolbar);
-      this.appendChild(fileInput);
-      this.appendChild(tableWrap);
-      this.appendChild(footer);
-
-      this._els = {
-        toolbar: toolbar,
-        searchWrap: searchWrap,
-        search: search,
-        actions: actions,
-        importBtn: importBtn,
-        exportCsvBtn: exportCsvBtn,
-        exportJsonBtn: exportJsonBtn,
-        thead: thead,
-        tbody: tbody,
-        info: info,
-        pager: pager,
-        pagerList: pagerList
-      };
-    };
-
-    // ---- Datos procesados (filtro + orden) ----
-
-    DataTableClass.prototype._processed = function () {
-      var self = this;
-      var rows = this._data.slice();
-
-      // Filtro (busca en todas las columnas visibles como texto).
-      var q = this._filterText.trim().toLowerCase();
-      if (q) {
-        rows = rows.filter(function (row) {
-          for (var i = 0; i < self._columns.length; i++) {
-            var v = safeText(row[self._columns[i].key]).toLowerCase();
-            if (v.indexOf(q) !== -1) return true;
+      // búsqueda global
+      if (this._search) {
+        var q = this._search.toLowerCase();
+        rows = rows.filter(function (r) {
+          for (var i = 0; i < cols.length; i++) {
+            if (cellText(r, cols[i]).toLowerCase().indexOf(q) !== -1) return true;
           }
           return false;
         });
       }
-
-      // Orden.
-      if (this._sortKey !== null) {
-        var key = this._sortKey;
-        var dir = this._sortDir;
-        rows.sort(function (a, b) {
-          return compareValues(a[key], b[key]) * dir;
+      // filtros por columna
+      var fkeys = Object.keys(this._colFilters);
+      if (fkeys.length) {
+        rows = rows.filter(function (r) {
+          for (var i = 0; i < fkeys.length; i++) {
+            var fk = fkeys[i], fv = self._colFilters[fk];
+            if (!fv) continue;
+            var col = null;
+            for (var j = 0; j < cols.length; j++) {
+              if (cols[j].key === fk) { col = cols[j]; break; }
+            }
+            if (!col) continue;
+            if (cellText(r, col).toLowerCase().indexOf(fv.toLowerCase()) === -1) {
+              return false;
+            }
+          }
+          return true;
         });
       }
-      return rows;
-    };
-
-    // ---- Render completo ----
-
-    DataTableClass.prototype._render = function () {
-      if (!this._built) return;
-      var self = this;
-      var cfg = this._cfg();
-      var els = this._els;
-
-      // Mostrar/ocultar controles según configuración.
-      els.searchWrap.style.display = cfg.filterable ? "" : "none";
-      els.importBtn.style.display = cfg.importable ? "" : "none";
-      els.exportCsvBtn.style.display = cfg.exportable ? "" : "none";
-      els.exportJsonBtn.style.display = cfg.exportable ? "" : "none";
-      els.actions.style.display =
-        cfg.importable || cfg.exportable ? "" : "none";
-      els.toolbar.style.display =
-        cfg.filterable || cfg.importable || cfg.exportable ? "" : "none";
-
-      var rows = this._processed();
-      var total = rows.length;
-
-      // Paginación.
-      var pageRows = rows;
-      var totalPages = 1;
-      if (cfg.paginate) {
-        totalPages = Math.max(1, Math.ceil(total / cfg.pageSize));
-        if (this._page > totalPages) this._page = totalPages;
-        if (this._page < 1) this._page = 1;
-        var start = (this._page - 1) * cfg.pageSize;
-        pageRows = rows.slice(start, start + cfg.pageSize);
+      // orden
+      if (this._sortKey && this._sortDir) {
+        var col = null;
+        for (var k = 0; k < cols.length; k++) {
+          if (cols[k].key === this._sortKey) { col = cols[k]; break; }
+        }
+        var dir = this._sortDir, type = col ? col.type : "string";
+        rows = rows.slice().sort(function (a, b) {
+          return compareValues(a[self._sortKey], b[self._sortKey], type) * dir;
+        });
       }
 
-      // ---- Cabecera ----
-      els.thead.textContent = "";
-      var trH = el("tr");
-      this._columns.forEach(function (col) {
-        var th = el("th");
-        th.scope = "col";
-        if (cfg.sortable) {
-          th.style.cursor = "pointer";
-          th.setAttribute("role", "button");
-          var span = el("span");
-          span.textContent = col.label;
-          th.appendChild(span);
-          if (self._sortKey === col.key) {
-            var arrow = el("span", "ms-1");
-            arrow.textContent = self._sortDir === 1 ? "▲" : "▼";
-            th.appendChild(arrow);
-          }
-          th.addEventListener("click", function () {
-            if (self._sortKey === col.key) {
-              self._sortDir = self._sortDir * -1;
-            } else {
-              self._sortKey = col.key;
-              self._sortDir = 1;
-            }
-            self._render();
-            self._emit("sort", { key: self._sortKey, dir: self._sortDir });
-          });
-        } else {
-          th.textContent = col.label;
-        }
-        trH.appendChild(th);
-      });
-      els.thead.appendChild(trH);
+      var total = rows.length;
+      var paginated = isTrueAttr(this, "paginated");
+      var pages = 1, page = 1, view = rows;
+      if (paginated) {
+        var ps = this.pageSize;
+        pages = Math.max(1, Math.ceil(total / ps));
+        page = Math.min(Math.max(1, this._page), pages);
+        this._page = page;
+        view = rows.slice((page - 1) * ps, page * ps);
+      }
+      return { rows: view, total: total, pages: pages, page: page };
+    }
 
-      // ---- Cuerpo ----
-      els.tbody.textContent = "";
-      if (this._columns.length === 0) {
-        this._renderEmptyRow(els.tbody, 1, "Sin columnas definidas.");
-      } else if (pageRows.length === 0) {
-        this._renderEmptyRow(els.tbody, this._columns.length, "Sin datos.");
+    _emit(name, detail, cancelable) {
+      return this.dispatchEvent(new CustomEvent(name, {
+        detail: detail, bubbles: true, cancelable: !!cancelable
+      }));
+    }
+
+    /* ---- acciones ---- */
+    _onSort(col) {
+      if (!isTrueAttr(this, "sortable") || col.sortable === false) return;
+      if (this._sortKey !== col.key) { this._sortKey = col.key; this._sortDir = 1; }
+      else if (this._sortDir === 1) { this._sortDir = -1; }
+      else if (this._sortDir === -1) { this._sortKey = null; this._sortDir = 0; }
+      else { this._sortDir = 1; }
+      this._emit("sort", { key: this._sortKey, dir: this._sortDir });
+      this._render();
+    }
+
+    _onSearch(value) {
+      this._search = value || ""; this._page = 1;
+      this._emit("filter", { search: this._search, columns: this._colFilters });
+      this._render();
+    }
+
+    _onColFilter(key, value) {
+      if (value) this._colFilters[key] = value; else delete this._colFilters[key];
+      this._page = 1;
+      this._emit("filter", { search: this._search, columns: this._colFilters });
+      this._render();
+    }
+
+    _onReorder(fromItem, toItem, before) {
+      var from = this._data.indexOf(fromItem);
+      var to = this._data.indexOf(toItem);
+      if (from === -1 || to === -1 || from === to) return;
+      this._data.splice(from, 1);
+      to = this._data.indexOf(toItem);
+      var insert = before ? to : to + 1;
+      this._data.splice(insert, 0, fromItem);
+      this._emit("reorder", { from: from, to: insert, data: this.data });
+      this._emit("change", { reason: "reorder", data: this.data });
+      this._render();
+    }
+
+    _doExport(format) {
+      var cols = this._columns, rows = this._computeView().rows;
+      var content, mime, ext;
+      if (format === "json") {
+        content = JSON.stringify(rows, null, 2);
+        mime = "application/json"; ext = "json";
       } else {
-        pageRows.forEach(function (rowObj, idx) {
+        content = toCSV(cols, rows); mime = "text/csv"; ext = "csv";
+      }
+      // la app puede preventDefault para gestionar la salida a su manera
+      var proceed = this._emit("export", {
+        format: format, content: content, rows: rows.slice()
+      }, true);
+      if (proceed) download("tabla-datos." + ext, content, mime);
+    }
+
+    _doImport(file) {
+      var self = this, reader = new FileReader();
+      reader.onload = function () {
+        var text = String(reader.result || "");
+        var rows;
+        try {
+          if (/\.json$/i.test(file.name) || /^\s*[\[{]/.test(text)) {
+            var parsed = JSON.parse(text);
+            rows = Array.isArray(parsed) ? parsed : (parsed.data || []);
+          } else {
+            rows = csvToObjects(text, self._columns);
+          }
+        } catch (e) {
+          self._emit("importerror", { message: "Archivo no válido", error: String(e) });
+          return;
+        }
+        var proceed = self._emit("import", { rows: rows, file: file.name }, true);
+        if (proceed) { self.data = rows; self._emit("change", { reason: "import", data: self.data }); }
+      };
+      reader.onerror = function () {
+        self._emit("importerror", { message: "No se pudo leer el archivo" });
+      };
+      reader.readAsText(file);
+    }
+
+    /* ---- construcción del DOM ---- */
+    _render() {
+      if (!this._ready) return;
+      var self = this;
+      this.textContent = "";
+
+      var wrap = el("div", { class: "table-date-wrap" });
+
+      // barra de herramientas
+      var showSearch = isTrueAttr(this, "searchable");
+      var showExport = isTrueAttr(this, "exportable");
+      var showImport = isTrueAttr(this, "importable");
+      if (showSearch || showExport || showImport) {
+        var tb = el("div", { class: "d-flex flex-wrap gap-2 align-items-center mb-2" });
+        if (showSearch) {
+          tb.appendChild(el("input", {
+            class: "form-control form-control-sm", 
+            attrs: { type: "search", placeholder: "Buscar…", "aria-label": "Buscar" },
+            props: { value: this._search },
+            on: { input: function (e) { self._onSearch(e.target.value); } }
+          }));
+        }
+        var spacer = el("div", { class: "ms-auto d-flex gap-2" });
+        if (showImport) {
+          var fileInput = el("input", {
+            class: "d-none",
+            attrs: { type: "file", accept: ".csv,.json,text/csv,application/json" },
+            on: { change: function (e) {
+              if (e.target.files && e.target.files[0]) self._doImport(e.target.files[0]);
+              e.target.value = "";
+            } }
+          });
+          spacer.appendChild(el("button", {
+            class: "btn btn-sm btn-outline-secondary", attrs: { type: "button" },
+            text: "Importar",
+            on: { click: function () { fileInput.click(); } }
+          }));
+          spacer.appendChild(fileInput);
+        }
+        if (showExport) {
+          spacer.appendChild(el("button", {
+            class: "btn btn-sm btn-outline-secondary", attrs: { type: "button" },
+            text: "Exportar CSV",
+            on: { click: function () { self._doExport("csv"); } }
+          }));
+          spacer.appendChild(el("button", {
+            class: "btn btn-sm btn-outline-secondary", attrs: { type: "button" },
+            text: "Exportar JSON",
+            on: { click: function () { self._doExport("json"); } }
+          }));
+        }
+        if (spacer.childNodes.length) tb.appendChild(spacer);
+        wrap.appendChild(tb);
+      }
+
+      // tabla
+      var view = this._computeView();
+      var cls = "table";
+      if (isTrueAttr(this, "striped")) cls += " table-striped";
+      if (isTrueAttr(this, "hover")) cls += " table-hover";
+      if (isTrueAttr(this, "bordered")) cls += " table-bordered";
+      if (this.getAttribute("size") === "sm") cls += " table-sm";
+      var table = el("table", { class: cls });
+
+      if (this.getAttribute("caption")) {
+        table.appendChild(el("caption", { text: this.getAttribute("caption") }));
+      }
+
+      // cabecera
+      var thead = el("thead");
+      var hr = el("tr");
+      if (isTrueAttr(this, "reorderable")) hr.appendChild(el("th", { attrs: { scope: "col" }, text: "" }));
+      this._columns.forEach(function (col) {
+        var th = el("th", { attrs: { scope: "col" } });
+        if (col.align) th.style.textAlign = col.align;
+        var sortable = isTrueAttr(self, "sortable") && col.sortable !== false;
+        if (sortable) {
+          th.style.cursor = "pointer";
+          th.style.userSelect = "none";
+          th.setAttribute("role", "button");
+        }
+        var labelSpan = el("span", { text: col.label });
+        th.appendChild(labelSpan);
+        if (sortable && self._sortKey === col.key && self._sortDir) {
+          th.appendChild(el("span", {
+            class: "ms-1", text: self._sortDir === 1 ? "▲" : "▼"
+          }));
+        }
+        if (sortable) {
+          th.addEventListener("click", function () { self._onSort(col); });
+        }
+        hr.appendChild(th);
+      });
+      thead.appendChild(hr);
+
+      // fila de filtros por columna
+      if (isTrueAttr(this, "filterable")) {
+        var fr = el("tr");
+        if (isTrueAttr(this, "reorderable")) fr.appendChild(el("th"));
+        this._columns.forEach(function (col) {
+          var cell = el("th");
+          cell.appendChild(el("input", {
+            class: "form-control form-control-sm",
+            attrs: { type: "text", placeholder: "Filtrar", "aria-label": "Filtrar " + col.label },
+            props: { value: self._colFilters[col.key] || "" },
+            on: { input: function (e) { self._onColFilter(col.key, e.target.value); } }
+          }));
+          fr.appendChild(cell);
+        });
+        thead.appendChild(fr);
+      }
+      table.appendChild(thead);
+
+      // cuerpo
+      var tbody = el("tbody");
+      var reorderable = isTrueAttr(this, "reorderable");
+      if (!view.rows.length) {
+        var span = this._columns.length + (reorderable ? 1 : 0);
+        var tr0 = el("tr");
+        tr0.appendChild(el("td", {
+          class: "text-center text-muted py-3",
+          attrs: { colspan: String(span || 1) },
+          text: this.getAttribute("empty-text") || "Sin datos"
+        }));
+        tbody.appendChild(tr0);
+      } else {
+        view.rows.forEach(function (row) {
           var tr = el("tr");
+          if (reorderable) {
+            tr.setAttribute("draggable", "true");
+            var handle = el("td", { class: "text-muted", text: "⠿", attrs: { "aria-hidden": "true" } });
+            handle.style.cursor = "grab";
+            tr.appendChild(handle);
+            tr.addEventListener("dragstart", function (e) {
+              self._dragItem = row;
+              tr.classList.add("table-active");
+              if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+            });
+            tr.addEventListener("dragend", function () {
+              tr.classList.remove("table-active");
+              self._dragItem = null;
+            });
+            tr.addEventListener("dragover", function (e) { e.preventDefault(); });
+            tr.addEventListener("drop", function (e) {
+              e.preventDefault();
+              if (!self._dragItem || self._dragItem === row) return;
+              var rect = tr.getBoundingClientRect();
+              var before = (e.clientY - rect.top) < rect.height / 2;
+              self._onReorder(self._dragItem, row, before);
+            });
+          }
           self._columns.forEach(function (col) {
-            var td = el("td");
-            td.textContent = safeText(rowObj[col.key]);
+            var td = el("td", { text: cellText(row, col) });
+            if (col.align) td.style.textAlign = col.align;
             tr.appendChild(td);
           });
           tr.addEventListener("click", function () {
-            self._emit("row-click", { row: rowObj, index: idx });
+            self._emit("rowclick", { row: row });
           });
-          els.tbody.appendChild(tr);
+          tbody.appendChild(tr);
         });
       }
+      table.appendChild(tbody);
 
-      // ---- Info ----
-      els.info.textContent =
-        total + (total === 1 ? " registro" : " registros") +
-        (cfg.paginate ? " · página " + this._page + " de " + totalPages : "");
+      var scroll = el("div", { class: "table-responsive" }, [table]);
+      wrap.appendChild(scroll);
 
-      // ---- Paginación ----
-      els.pager.style.display = cfg.paginate && totalPages > 1 ? "" : "none";
-      if (cfg.paginate && totalPages > 1) {
-        this._renderPager(totalPages);
-      } else {
-        els.pagerList.textContent = "";
-      }
-    };
-
-    DataTableClass.prototype._renderEmptyRow = function (tbody, colspan, message) {
-      var tr = el("tr");
-      var td = el("td", "text-center text-muted py-3");
-      td.colSpan = colspan;
-      td.textContent = message;
-      tr.appendChild(td);
-      tbody.appendChild(tr);
-    };
-
-    DataTableClass.prototype._renderPager = function (totalPages) {
-      var self = this;
-      var list = this._els.pagerList;
-      list.textContent = "";
-
-      function pageItem(label, page, disabled, active) {
-        var li = el("li", "page-item");
-        if (disabled) li.className += " disabled";
-        if (active) li.className += " active";
-        var btn = el("button", "page-link");
-        btn.type = "button";
-        btn.textContent = label;
-        if (!disabled && !active) {
-          btn.addEventListener("click", function () {
-            self._page = page;
-            self._render();
-            self._emit("page", { page: self._page });
-          });
-        }
-        li.appendChild(btn);
-        return li;
+      // paginación
+      if (isTrueAttr(this, "paginated") && view.total) {
+        var foot = el("div", { class: "d-flex flex-wrap align-items-center justify-content-between gap-2" });
+        foot.appendChild(el("small", {
+          class: "text-muted",
+          text: "Mostrando " + view.rows.length + " de " + view.total +
+                " · Página " + view.page + "/" + view.pages
+        }));
+        var nav = el("div", { class: "btn-group btn-group-sm" });
+        nav.appendChild(el("button", {
+          class: "btn btn-outline-secondary", attrs: { type: "button" },
+          props: { disabled: view.page <= 1 }, text: "‹ Anterior",
+          on: { click: function () { self._page = view.page - 1; self._render(); } }
+        }));
+        nav.appendChild(el("button", {
+          class: "btn btn-outline-secondary", attrs: { type: "button" },
+          props: { disabled: view.page >= view.pages }, text: "Siguiente ›",
+          on: { click: function () { self._page = view.page + 1; self._render(); } }
+        }));
+        foot.appendChild(nav);
+        wrap.appendChild(foot);
       }
 
-      list.appendChild(pageItem("«", this._page - 1, this._page <= 1, false));
+      this.appendChild(wrap);
+    }
+  };
 
-      // Ventana de páginas alrededor de la actual.
-      var startPage = Math.max(1, this._page - 2);
-      var endPage = Math.min(totalPages, startPage + 4);
-      startPage = Math.max(1, endPage - 4);
-      for (var p = startPage; p <= endPage; p++) {
-        list.appendChild(pageItem(String(p), p, false, p === this._page));
-      }
-
-      list.appendChild(
-        pageItem("»", this._page + 1, this._page >= totalPages, false)
-      );
-    };
-
-    // ---- Importar / Exportar ----
-
-    DataTableClass.prototype._handleImport = function (text, filename) {
-      var parsed;
-      var name = (filename || "").toLowerCase();
-      try {
-        if (name.indexOf(".json") !== -1) {
-          parsed = JSON.parse(text);
-          if (!isPlainArray(parsed)) parsed = [parsed];
-        } else {
-          parsed = parseCSV(text);
-        }
-      } catch (e) {
-        this._emit("error", {
-          message: "No se pudo interpretar el archivo importado."
-        });
-        return;
-      }
-      // La librería NO decide qué hacer con los datos: solo los muestra en la
-      // tabla como cortesía y avisa a la app mediante el evento "import".
-      this._data = isPlainArray(parsed) ? parsed : [];
-      if (this._columns.length === 0 && this._data.length > 0) {
-        this._columns = Object.keys(this._data[0]).map(function (k) {
-          return { key: k, label: k };
-        });
-      }
-      this._page = 1;
-      this._render();
-      this._emit("import", { data: this._data.slice(), filename: filename });
-    };
-
-    DataTableClass.prototype._exportCSV = function () {
-      if (this._columns.length === 0) return;
-      var csv = toCSV(this._processed(), this._columns);
-      downloadBlob("\uFEFF" + csv, "tabla-datos.csv", "text/csv;charset=utf-8;");
-      this._emit("export", { format: "csv" });
-    };
-
-    DataTableClass.prototype._exportJSON = function () {
-      var json = JSON.stringify(this._processed(), null, 2);
-      downloadBlob(json, "tabla-datos.json", "application/json;charset=utf-8;");
-      this._emit("export", { format: "json" });
-    };
-
-    // ---- Emisión de eventos ----
-
-    DataTableClass.prototype._emit = function (name, detail) {
-      this.dispatchEvent(
-        new CustomEvent(name, { detail: detail, bubbles: true })
-      );
-      // Evento genérico "change" con el estado actual, útil para escuchar todo.
-      this.dispatchEvent(
-        new CustomEvent("change", {
-          detail: {
-            type: name,
-            payload: detail,
-            filter: this._filterText,
-            sortKey: this._sortKey,
-            sortDir: this._sortDir,
-            page: this._page
-          },
-          bubbles: true
-        })
-      );
-    };
-
-    return DataTableClass;
-  })();
-
-  global.customElements.define("data-table", DataTable);
-})(window);
+  customElements.define("table-date", TableDate);
+})();
