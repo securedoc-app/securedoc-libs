@@ -1,12 +1,13 @@
 /*
  * Tabla de Datos — Librería reutilizable (Web Component nativo)
- * Etiqueta: <table-date>
+ * Etiqueta: <data-table>
  *
- * Componente de tabla interactiva: ordenar, filtrar/buscar, paginar,
- * reordenar filas (arrastrar), importar y exportar. Cada capacidad se
- * activa/desactiva por atributo. El componente NO lee ni guarda datos por
- * su cuenta: recibe datos por propiedades JS y avisa de todo cambio con
- * CustomEvent para que la app decida qué hacer.
+ * Componente de tabla interactiva: ordenar, buscar (una sola caja arriba,
+ * búsqueda por palabras con AND), paginar, reordenar filas (arrastrar),
+ * importar y exportar. Cada capacidad se activa/desactiva por atributo.
+ * El componente NO lee ni guarda datos por su cuenta: recibe datos por
+ * propiedades JS y avisa de todo cambio con CustomEvent para que la app
+ * decida qué hacer.
  *
  * Sin Shadow DOM (hereda Bootstrap 5 de la app). Sin eval/Function,
  * sin document.write, sin eventos inline, sin innerHTML con datos.
@@ -14,7 +15,7 @@
 (function () {
   "use strict";
 
-  if (window.customElements && customElements.get("table-date")) return;
+  if (window.customElements && customElements.get("data-table")) return;
 
   /* ---------- utilidades puras (dentro del ámbito privado) ---------- */
 
@@ -62,8 +63,7 @@
   }
 
   function cellRaw(row, col) {
-    var v = row ? row[col.key] : undefined;
-    return v;
+    return row ? row[col.key] : undefined;
   }
 
   function cellText(row, col) {
@@ -132,7 +132,6 @@
     var rows = parseCSV(text);
     if (!rows.length) return [];
     var header = rows[0];
-    // mapea cada cabecera a una key de columna (por label o por key)
     var keys = header.map(function (h) {
       var hh = String(h).trim();
       for (var j = 0; j < cols.length; j++) {
@@ -171,10 +170,10 @@
 
   /* ----------------------- el Web Component ----------------------- */
 
-  var TableDate = class extends HTMLElement {
+  var DataTable = class extends HTMLElement {
     static get observedAttributes() {
       return [
-        "sortable", "searchable", "filterable", "paginated", "page-size",
+        "sortable", "searchable", "paginated", "page-size",
         "reorderable", "exportable", "importable",
         "striped", "hover", "bordered", "size", "empty-text", "caption"
       ];
@@ -187,9 +186,7 @@
       this._sortKey = null;
       this._sortDir = 0;        // 0 ninguno, 1 asc, -1 desc
       this._search = "";
-      this._colFilters = {};
       this._page = 1;
-      this._root = null;
       this._dragItem = null;    // referencia al objeto fila arrastrado
       this._ready = false;
     }
@@ -209,7 +206,6 @@
               align: c.align || null
             };
       }) : [];
-      this._colFilters = {};
       this._render();
     }
 
@@ -241,45 +237,32 @@
       if (rows) this.data = rows;
     }
     getVisibleRows() { return this._computeView().rows.slice(); }
-    clearFilters() {
-      this._search = ""; this._colFilters = {}; this._page = 1; this._render();
-    }
+    clearFilters() { this._search = ""; this._page = 1; this._render(); }
 
-    /* ---- lógica interna: filtrar -> ordenar -> paginar ---- */
+    /* ---- lógica interna: buscar -> ordenar -> paginar ---- */
     _computeView() {
       var self = this;
       var cols = this._columns;
       var rows = this._data;
 
-      // búsqueda global
-      if (this._search) {
-        var q = this._search.toLowerCase();
+      // búsqueda única por palabras con AND: todas las palabras deben
+      // aparecer en el texto combinado de todas las columnas de la fila
+      var tokens = this._search
+        ? this._search.toLowerCase().split(/\s+/).filter(Boolean)
+        : [];
+      if (tokens.length) {
         rows = rows.filter(function (r) {
+          var hay = "";
           for (var i = 0; i < cols.length; i++) {
-            if (cellText(r, cols[i]).toLowerCase().indexOf(q) !== -1) return true;
+            hay += " " + cellText(r, cols[i]).toLowerCase();
           }
-          return false;
-        });
-      }
-      // filtros por columna
-      var fkeys = Object.keys(this._colFilters);
-      if (fkeys.length) {
-        rows = rows.filter(function (r) {
-          for (var i = 0; i < fkeys.length; i++) {
-            var fk = fkeys[i], fv = self._colFilters[fk];
-            if (!fv) continue;
-            var col = null;
-            for (var j = 0; j < cols.length; j++) {
-              if (cols[j].key === fk) { col = cols[j]; break; }
-            }
-            if (!col) continue;
-            if (cellText(r, col).toLowerCase().indexOf(fv.toLowerCase()) === -1) {
-              return false;
-            }
+          for (var t = 0; t < tokens.length; t++) {
+            if (hay.indexOf(tokens[t]) === -1) return false; // AND
           }
           return true;
         });
       }
+
       // orden
       if (this._sortKey && this._sortDir) {
         var col = null;
@@ -324,14 +307,8 @@
 
     _onSearch(value) {
       this._search = value || ""; this._page = 1;
-      this._emit("filter", { search: this._search, columns: this._colFilters });
-      this._render();
-    }
-
-    _onColFilter(key, value) {
-      if (value) this._colFilters[key] = value; else delete this._colFilters[key];
-      this._page = 1;
-      this._emit("filter", { search: this._search, columns: this._colFilters });
+      var tokens = this._search.toLowerCase().split(/\s+/).filter(Boolean);
+      this._emit("filter", { search: this._search, tokens: tokens });
       this._render();
     }
 
@@ -357,11 +334,10 @@
       } else {
         content = toCSV(cols, rows); mime = "text/csv"; ext = "csv";
       }
-      // la app puede preventDefault para gestionar la salida a su manera
       var proceed = this._emit("export", {
         format: format, content: content, rows: rows.slice()
       }, true);
-      if (proceed) download("tabla-datos." + ext, content, mime);
+      if (proceed) download("data-table." + ext, content, mime);
     }
 
     _doImport(file) {
@@ -395,7 +371,7 @@
       var self = this;
       this.textContent = "";
 
-      var wrap = el("div", { class: "table-date-wrap" });
+      var wrap = el("div", { class: "data-table-wrap" });
 
       // barra de herramientas
       var showSearch = isTrueAttr(this, "searchable");
@@ -405,8 +381,12 @@
         var tb = el("div", { class: "d-flex flex-wrap gap-2 align-items-center mb-2" });
         if (showSearch) {
           tb.appendChild(el("input", {
-            class: "form-control form-control-sm", 
-            attrs: { type: "search", placeholder: "Buscar…", "aria-label": "Buscar" },
+            class: "form-control form-control-sm",
+            attrs: {
+              type: "search",
+              placeholder: "Buscar (varias palabras = todas deben coincidir)…",
+              "aria-label": "Buscar"
+            },
             props: { value: this._search },
             on: { input: function (e) { self._onSearch(e.target.value); } }
           }));
@@ -470,8 +450,7 @@
           th.style.userSelect = "none";
           th.setAttribute("role", "button");
         }
-        var labelSpan = el("span", { text: col.label });
-        th.appendChild(labelSpan);
+        th.appendChild(el("span", { text: col.label }));
         if (sortable && self._sortKey === col.key && self._sortDir) {
           th.appendChild(el("span", {
             class: "ms-1", text: self._sortDir === 1 ? "▲" : "▼"
@@ -483,23 +462,6 @@
         hr.appendChild(th);
       });
       thead.appendChild(hr);
-
-      // fila de filtros por columna
-      if (isTrueAttr(this, "filterable")) {
-        var fr = el("tr");
-        if (isTrueAttr(this, "reorderable")) fr.appendChild(el("th"));
-        this._columns.forEach(function (col) {
-          var cell = el("th");
-          cell.appendChild(el("input", {
-            class: "form-control form-control-sm",
-            attrs: { type: "text", placeholder: "Filtrar", "aria-label": "Filtrar " + col.label },
-            props: { value: self._colFilters[col.key] || "" },
-            on: { input: function (e) { self._onColFilter(col.key, e.target.value); } }
-          }));
-          fr.appendChild(cell);
-        });
-        thead.appendChild(fr);
-      }
       table.appendChild(thead);
 
       // cuerpo
@@ -553,8 +515,7 @@
       }
       table.appendChild(tbody);
 
-      var scroll = el("div", { class: "table-responsive" }, [table]);
-      wrap.appendChild(scroll);
+      wrap.appendChild(el("div", { class: "table-responsive" }, [table]));
 
       // paginación
       if (isTrueAttr(this, "paginated") && view.total) {
@@ -583,5 +544,5 @@
     }
   };
 
-  customElements.define("table-date", TableDate);
+  customElements.define("data-table", DataTable);
 })();
