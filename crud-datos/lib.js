@@ -21,10 +21,11 @@
 
   if (window.customElements && customElements.get("crud-data")) return;
 
-  /* Versión con las correcciones de acciones (botones al paginar) y de
-     apertura de formulario (Editar/Agregar). Sirve de sello para
-     verificar en consola que el navegador NO está usando una copia vieja. */
-  var CRUD_DATOS_VERSION = "1.1.0-hotfix-2026-11-01";
+  /* Versión con las correcciones de acciones (botones al paginar), la
+     apertura de formulario (Editar/Agregar) y los botones de acción con
+     ICONOS de Bootstrap Icons + tooltips. Sirve de sello para verificar
+     en consola que el navegador NO está usando una copia vieja. */
+  var CRUD_DATOS_VERSION = "1.2.0-iconos";
   try {
     if (window.console && console.log) {
       console.log("%c[crud-datos] versión " + CRUD_DATOS_VERSION + " cargada correctamente",
