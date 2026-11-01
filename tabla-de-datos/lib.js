@@ -170,13 +170,23 @@
 
   /* ----------------------- el Web Component ----------------------- */
 
+  /* Versión del componente. Permite comprobar en consola que el navegador
+     NO está sirviendo una copia vieja del CDN. */
+  var TABLA_DATOS_VERSION = "1.2.1-foco-busqueda";
+  try {
+    if (window.console && console.log) {
+      console.log("%c[tabla-de-datos] versión " + TABLA_DATOS_VERSION + " cargada correctamente",
+        "color:#0a7;font-weight:bold");
+    }
+  } catch (e) { /* consola no disponible */ }
+
   var DataTable = class extends HTMLElement {
     static get observedAttributes() {
       return [
         "sortable", "searchable", "paginated", "page-size",
         "reorderable", "exportable", "importable",
         "striped", "hover", "bordered", "size", "empty-text", "caption",
-        "id-key"
+        "id-key", "search-delay"
       ];
     }
 
@@ -188,6 +198,8 @@
       this._sortDir = 0;        // 0 ninguno, 1 asc, -1 desc
       this._search = "";
       this._page = 1;
+      this._searchFocus = null;   // recuerda si el foco estaba en la caja de búsqueda
+      this._searchTimer = null;   // temporizador del retardo entre teclas
       this._dragItem = null;    // referencia al objeto fila arrastrado
       this._ready = false;
     }
@@ -223,6 +235,14 @@
     }
     set pageSize(n) { this.setAttribute("page-size", String(n)); }
 
+    /* Milisegundos de espera entre tecla y tecla antes de filtrar.
+       Evita que se haga una busqueda por cada caracter escrito. */
+    get searchDelay() {
+      var n = parseInt(this.getAttribute("search-delay"), 10);
+      return n >= 0 ? n : 350;
+    }
+    set searchDelay(n) { this.setAttribute("search-delay", String(n)); }
+
     /* ---- ciclo de vida ---- */
     connectedCallback() {
       this._ready = true;
@@ -238,7 +258,12 @@
       if (rows) this.data = rows;
     }
     getVisibleRows() { return this._computeView().rows.slice(); }
-    clearFilters() { this._search = ""; this._page = 1; this._render(); }
+    clearFilters() {
+      this._search = ""; this._page = 1;
+      if (this._searchTimer) { clearTimeout(this._searchTimer); this._searchTimer = null; }
+      this._render();
+      this._focusSearch();
+    }
 
     /* ---- lógica interna: buscar -> ordenar -> paginar ---- */
     _computeView() {
@@ -308,9 +333,33 @@
 
     _onSearch(value) {
       this._search = value || ""; this._page = 1;
-      var tokens = this._search.toLowerCase().split(/\s+/).filter(Boolean);
-      this._emit("filter", { search: this._search, tokens: tokens });
-      this._render();
+      // El foco estaba en la caja de busqueda: lo recordamos para
+      // devolverlo tras el re-render (si no, se perderia en cada tecla).
+      this._searchFocus = true;
+      var self = this;
+      // Retardo entre teclas: no filtramos en cada caracter, sino tras una
+      // breve pausa; asi la busqueda no se dispara demasiado rapido.
+      if (this._searchTimer) clearTimeout(this._searchTimer);
+      var delay = this.searchDelay;
+      var run = function () {
+        self._searchTimer = null;
+        var tokens = self._search.toLowerCase().split(/\s+/).filter(Boolean);
+        self._emit("filter", { search: self._search, tokens: tokens });
+        self._render();
+      };
+      if (delay > 0) this._searchTimer = setTimeout(run, delay);
+      else run();
+    }
+
+    /* Devuelve el foco (y el cursor al final) a la caja de busqueda tras
+       reconstruir la tabla. */
+    _focusSearch() {
+      if (!this._searchInput) return;
+      try {
+        this._searchInput.focus();
+        var n = this._searchInput.value.length;
+        this._searchInput.setSelectionRange(n, n);
+      } catch (e) { /* algunos navegadores no permiten setSelectionRange en type=search */ }
     }
 
     _onReorder(fromItem, toItem, before) {
@@ -381,16 +430,24 @@
       if (showSearch || showExport || showImport) {
         var tb = el("div", { class: "d-flex flex-wrap gap-2 align-items-center mb-2" });
         if (showSearch) {
-          tb.appendChild(el("input", {
+          var searchInput = el("input", {
             class: "form-control form-control-sm",
             attrs: {
               type: "search",
+              "data-dt-role": "search",
               placeholder: "Buscar (varias palabras = todas deben coincidir)…",
               "aria-label": "Buscar"
             },
             props: { value: this._search },
-            on: { input: function (e) { self._onSearch(e.target.value); } }
-          }));
+            on: {
+              input: function (e) { self._onSearch(e.target.value); },
+              // Si el usuario sale de la caja (o reinicia el buscador con la
+              // X nativa), dejamos de intentar devolver el foco.
+              blur: function () { self._searchFocus = false; }
+            }
+          });
+          this._searchInput = searchInput;
+          tb.appendChild(searchInput);
         }
         var spacer = el("div", { class: "ms-auto d-flex gap-2" });
         if (showImport) {
@@ -548,6 +605,11 @@
       }
 
       this.appendChild(wrap);
+
+      /* Si el usuario estaba escribiendo en la caja de busqueda, le
+         devolvemos el foco y el cursor al final. Sin esto, cada tecla
+         redibuja la tabla, borra la caja y el foco se pierde.           */
+      if (this._searchFocus && this._searchInput) this._focusSearch();
     }
   };
 
