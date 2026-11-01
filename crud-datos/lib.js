@@ -108,6 +108,17 @@
     });
   }
 
+  /* Asegura el CSS de Bootstrap Icons (solo iconos, no toca el resto).
+     Si la pagina ya lo trae, no duplica nada. */
+  function ensureIconsCss() {
+    var L = "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css";
+    if (document.querySelector('link[href="' + L + '"]')) return;
+    var l = document.createElement("link");
+    l.rel = "stylesheet";
+    l.href = L;
+    (document.head || document.documentElement).appendChild(l);
+  }
+
   function getField(row, key) {
     if (String(key).indexOf(".") === -1) return row ? row[key] : undefined;
     var parts = String(key).split("."), cur = row;
@@ -186,6 +197,7 @@
 
     /* ---- ciclo de vida ---- */
     connectedCallback() {
+      ensureIconsCss();
       this._ready = true;
       this._render();
     }
@@ -510,11 +522,16 @@
       var lista = this._actionButtons();
       var idVal = getField(row, this.idKey);
       var chk = el("div", { class: "btn-group btn-group-sm", attrs: { role: "group" } });
+      // Los botones son solo iconos de Bootstrap Icons; el texto va en title y
+      // en aria-label, y se muestra un tooltip al pasar el raton.
 
       if (lista.indexOf("edit") !== -1 && safe(this._hooks.canEdit, ctx({ row: row })) !== false) {
         var bEdit = el("button", {
-          class: "btn btn-outline-primary", attrs: { type: "button", title: "Editar" }, text: "Editar"
+          class: "btn btn-outline-primary",
+          attrs: { type: "button", title: "Editar", "aria-label": "Editar" }
         });
+        bEdit.appendChild(el("i", { class: "bi bi-pencil-square", attrs: { "aria-hidden": "true" } }));
+        self._hoverTooltip(bEdit);
         bEdit.addEventListener("click", function (e) { e.stopPropagation();
           var idTx = getField(row, self.idKey);
           var ok = self._emit("crud-open", { row: row, mode: "edit" }, true);
@@ -525,19 +542,40 @@
       }
       if (lista.indexOf("duplicate") !== -1) {
         var bDup = el("button", {
-          class: "btn btn-outline-secondary", attrs: { type: "button", title: "Duplicar" }, text: "Duplicar"
+          class: "btn btn-outline-secondary",
+          attrs: { type: "button", title: "Duplicar", "aria-label": "Duplicar" }
         });
+        bDup.appendChild(el("i", { class: "bi bi-files", attrs: { "aria-hidden": "true" } }));
+        self._hoverTooltip(bDup);
         bDup.addEventListener("click", function (e) { e.stopPropagation(); self._duplicate(row); });
         chk.appendChild(bDup);
       }
       if (lista.indexOf("delete") !== -1 && safe(this._hooks.canDelete, ctx({ row: row })) !== false) {
         var bDel = el("button", {
-          class: "btn btn-outline-danger", attrs: { type: "button", title: "Eliminar" }, text: "Eliminar"
+          class: "btn btn-outline-danger",
+          attrs: { type: "button", title: "Eliminar", "aria-label": "Eliminar" }
         });
+        bDel.appendChild(el("i", { class: "bi bi-trash3", attrs: { "aria-hidden": "true" } }));
+        self._hoverTooltip(bDel);
         bDel.addEventListener("click", function (e) { e.stopPropagation(); self._confirmDelete(row, idVal); });
         chk.appendChild(bDel);
       }
       return chk;
+    }
+
+    /* Muestra un tooltip de Bootstrap al pasar el raton sobre un boton.
+       No usa atributos inline: crea la instancia por JS. Si Bootstrap no
+       esta disponible, el navegador ya muestra el "title" nativo. */
+    _hoverTooltip(btn) {
+      btn.addEventListener("mouseenter", function () {
+        if (window.bootstrap && bootstrap.Tooltip && !btn._tip) {
+          btn._tip = new bootstrap.Tooltip(btn, { container: "body", trigger: "hover" });
+          btn._tip.show();
+        }
+      });
+      btn.addEventListener("mouseleave", function () {
+        if (btn._tip) { btn._tip.dispose(); btn._tip = null; }
+      });
     }
 
     _confirmDelete(row, idVal) {
