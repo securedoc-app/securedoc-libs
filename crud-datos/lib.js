@@ -352,7 +352,7 @@
           class: "btn btn-sm btn-primary", attrs: { type: "button" },
           text: this.getAttribute("add-label") || "+ Agregar"
         });
-        bAdd.addEventListener("click", function () { self._emit("crud-open", { row: null, mode: "create" }, false); });
+        bAdd.addEventListener("click", function () { if (self._emit("crud-open", { row: null, mode: "create" }, true)) self._openForm(null); });
         if (!this._canAdd()) bAdd.style.display = "none";
         head.appendChild(bAdd);
       }
@@ -503,7 +503,7 @@
         var bEdit = el("button", {
           class: "btn btn-outline-primary", attrs: { type: "button", title: "Editar" }, text: "Editar"
         });
-        bEdit.addEventListener("click", function (e) { e.stopPropagation(); self._emit("crud-open", { row: row, mode: "edit" }, false); });
+        bEdit.addEventListener("click", function (e) { e.stopPropagation(); if (self._emit("crud-open", { row: row, mode: "edit" }, true)) self._openForm(row); });
         chk.appendChild(bEdit);
       }
       if (lista.indexOf("duplicate") !== -1) {
