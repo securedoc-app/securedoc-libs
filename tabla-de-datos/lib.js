@@ -175,7 +175,8 @@
       return [
         "sortable", "searchable", "paginated", "page-size",
         "reorderable", "exportable", "importable",
-        "striped", "hover", "bordered", "size", "empty-text", "caption"
+        "striped", "hover", "bordered", "size", "empty-text", "caption",
+        "id-key"
       ];
     }
 
@@ -479,6 +480,12 @@
       } else {
         view.rows.forEach(function (row) {
           var tr = el("tr");
+          // Estampar el id del registro para que consumidores (p. ej. crud-datos)
+          // puedan emparejar cada TR con su fila real aunque la tabla ordene,
+          // pagine o filtre y el orden deje de coincidir con los datos.
+          var _idKey = self.getAttribute("id-key") || "id";
+          var _rid = row ? row[_idKey] : null;
+          if (_rid != null && _rid !== "") tr.setAttribute("data-row-id", String(_rid));
           if (reorderable) {
             tr.setAttribute("draggable", "true");
             var handle = el("td", { class: "text-muted", text: "⠿", attrs: { "aria-hidden": "true" } });
