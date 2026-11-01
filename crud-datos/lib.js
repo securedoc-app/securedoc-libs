@@ -21,6 +21,18 @@
 
   if (window.customElements && customElements.get("crud-data")) return;
 
+  /* Versión con las correcciones de acciones (botones al paginar) y de
+     apertura de formulario (Editar/Agregar). Sirve de sello para
+     verificar en consola que el navegador NO está usando una copia vieja. */
+  var CRUD_DATOS_VERSION = "1.1.0-hotfix-2026-11-01";
+  try {
+    if (window.console && console.log) {
+      console.log("%c[crud-datos] versión " + CRUD_DATOS_VERSION + " cargada correctamente",
+        "color:#0a7;font-weight:bold");
+      console.log("[crud-datos] Si este mensaje NO aparece, el navegador o el CDN está sirviendo una copia antigua (usa recarga forzada: Ctrl+F5 / Cmd+Shift+R).");
+    }
+  } catch (e) { /* consola no disponible */ }
+
   /* ---------------- utilidades puras (ámbito privado) ---------------- */
 
   function el(tag, opts, children) {
@@ -503,7 +515,12 @@
         var bEdit = el("button", {
           class: "btn btn-outline-primary", attrs: { type: "button", title: "Editar" }, text: "Editar"
         });
-        bEdit.addEventListener("click", function (e) { e.stopPropagation(); if (self._emit("crud-open", { row: row, mode: "edit" }, true)) self._openForm(row); });
+        bEdit.addEventListener("click", function (e) { e.stopPropagation();
+          var idTx = getField(row, self.idKey);
+          var ok = self._emit("crud-open", { row: row, mode: "edit" }, true);
+          if (window.console && console.log) console.log("[crud-datos] clic Editar -> id=", idTx, "| aviso crud-open cancelado:", !ok);
+          if (ok) self._openForm(row);
+        });
         chk.appendChild(bEdit);
       }
       if (lista.indexOf("duplicate") !== -1) {
@@ -570,6 +587,7 @@
     _openForm(rowOriginal) {
       var self = this;
       var esEdicion = !!rowOriginal;
+      if (window.console && console.log) console.log("[crud-datos] _openForm modo=", (esEdicion ? "editar" : "crear"), "| fila=", rowOriginal);
 
       if (!esEdicion) {
         if (this._hooks.canAdd && safe(this._hooks.canAdd, ctx({ total: this._data.length, limit: this.limit })) === false) {
@@ -685,6 +703,7 @@
         modal.classList.add("show");
         modal.style.display = "block";
       }
+      if (window.console && console.log) console.log("[crud-datos] formulario abierto para", (esEdicion ? "editar" : "crear"));
 
       var limpiarErrores = function () {
         Object.keys(inputs).forEach(function (k) {
