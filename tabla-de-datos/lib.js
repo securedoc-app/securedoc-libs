@@ -343,7 +343,7 @@
 
     _doImport(file) {
       var self = this, reader = new FileReader();
-      reader.onload = function () {
+      reader.addEventListener("load", function () {
         var text = String(reader.result || "");
         var rows;
         try {
@@ -359,10 +359,10 @@
         }
         var proceed = self._emit("import", { rows: rows, file: file.name }, true);
         if (proceed) { self.data = rows; self._emit("change", { reason: "import", data: self.data }); }
-      };
-      reader.onerror = function () {
+      });
+      reader.addEventListener("error", function () {
         self._emit("importerror", { message: "No se pudo leer el archivo" });
-      };
+      });
       reader.readAsText(file);
     }
 
