@@ -1,345 +1,223 @@
-/* ============================================================================
-   Reproductor Audio  —  Web Component nativo <audio-player>
-   Librería reutilizable (un solo archivo, JS puro, sin build, sin imports).
-   Cárgala con: <script src="lib.js"></script>
-   No usa Shadow DOM (hereda Bootstrap 5 y estilos de la app que la cargue).
-   ========================================================================== */
+/*
+ * Reproductor Audio — <audio-player>
+ * Librería reutilizable (Web Component nativo, sin Shadow DOM).
+ * Hereda Bootstrap 5 de la página anfitriona y usa sus clases de color.
+ * Requiere Bootstrap 5 CSS/JS y Bootstrap Icons cargados en la página.
+ */
 (function () {
   "use strict";
 
-  // Evita redefinir si el archivo se carga dos veces.
-  if (window.customElements && customElements.get("audio-player")) {
-    return;
+  // CSS mínimo: solo lo que Bootstrap no ofrece (deslizamiento y ancho fijo).
+  if (!document.getElementById("audio-player-style")) {
+    var st = document.createElement("style");
+    st.id = "audio-player-style";
+    st.textContent =
+      "audio-player{position:fixed;right:0;bottom:20px;z-index:1050;" +
+      "display:flex;align-items:stretch;transition:transform .35s ease}" +
+      "audio-player.ap-hidden{transform:translateX(calc(100% - 34px))}" +
+      "audio-player .ap-card{width:320px}" +
+      "audio-player .ap-tab{width:34px}" +
+      "audio-player .ap-vol{width:90px}";
+    document.head.appendChild(st);
   }
 
-  var STYLE_ID = "audio-player-reproductor-css";
-  var ANIM = "apTitleScroll";
-
-  // --- CSS inyectado una sola vez (sin innerHTML con datos dinámicos) -------
-  function ensureStyles() {
-    if (document.getElementById(STYLE_ID)) { return; }
-    var css = "" +
-      "audio-player{position:fixed;right:16px;bottom:16px;z-index:1080;" +
-        "width:320px;max-width:calc(100vw - 32px);display:block;" +
-        "font-size:.875rem;}" +
-      "audio-player .ap-card{border-radius:.75rem;overflow:hidden;" +
-        "box-shadow:0 .5rem 1.5rem rgba(0,0,0,.35);}" +
-      "audio-player .ap-title-wrap{overflow:hidden;white-space:nowrap;" +
-        "position:relative;}" +
-      "audio-player .ap-title-track{display:inline-block;padding-left:100%;" +
-        "will-change:transform;animation:" + ANIM + " 12s linear infinite;}" +
-      "audio-player .ap-title-track.ap-paused{animation-play-state:paused;}" +
-      "@keyframes " + ANIM + "{0%{transform:translateX(0);}" +
-        "100%{transform:translateX(-100%);}}" +
-      "audio-player .ap-btn{min-width:38px;}" +
-      "audio-player .ap-range{height:.35rem;cursor:pointer;}" +
-      "audio-player .ap-time{font-variant-numeric:tabular-nums;}" +
-      "audio-player .ap-fading{animation:apPulse 1s ease-in-out infinite;}" +
-      "@keyframes apPulse{0%,100%{opacity:1;}50%{opacity:.45;}}";
-    var el = document.createElement("style");
-    el.id = STYLE_ID;
-    el.textContent = css;
-    (document.head || document.documentElement).appendChild(el);
+  function el(tag, cls, attrs) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (attrs) Object.keys(attrs).forEach(function (k) { n.setAttribute(k, attrs[k]); });
+    return n;
+  }
+  function icon(name) { return el("i", "bi bi-" + name); }
+  function fmt(s) {
+    if (!isFinite(s)) return "0:00";
+    var m = Math.floor(s / 60), r = Math.floor(s % 60);
+    return m + ":" + (r < 10 ? "0" : "") + r;
   }
 
-  // --- Utilidades -----------------------------------------------------------
-  function mkBtn(label, aria, extraClass) {
-    var b = document.createElement("button");
-    b.type = "button";
-    b.className = "btn btn-outline-light btn-sm ap-btn " + (extraClass || "");
-    b.textContent = label;              // texto escapado, nunca innerHTML
-    b.setAttribute("aria-label", aria);
-    b.title = aria;
-    return b;
-  }
-
-  function fmtTime(s) {
-    if (!isFinite(s) || s < 0) { s = 0; }
-    var m = Math.floor(s / 60);
-    var r = Math.floor(s % 60);
-    return m + ":" + (r < 10 ? "0" + r : r);
-  }
-
-  function clamp(v, lo, hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
-  }
-
-  // --- Definición del Web Component ----------------------------------------
-  var AudioPlayer = class extends HTMLElement {
-
-    static get observedAttributes() {
-      return ["src", "name", "volume", "autoplay"];
-    }
+  class AudioPlayer extends HTMLElement {
+    static get observedAttributes() { return ["src", "song", "artist"]; }
 
     constructor() {
       super();
-      this._built = false;
-      this._fadeTimer = null;     // intervalo de volumen continuo
-      this._fadeDir = 0;          // -1 baja, +1 sube, 0 parado
-      this._audio = null;
+      this._ramp = null;
+      this._rampDir = 0;
     }
 
     connectedCallback() {
-      ensureStyles();
-      if (!this._built) { this._build(); }
-      // Aplica atributos ya presentes en el HTML.
-      if (this.hasAttribute("src"))    { this._setSrc(this.getAttribute("src")); }
-      if (this.hasAttribute("name"))   { this._setName(this.getAttribute("name")); }
-      if (this.hasAttribute("volume")) { this._setVolume(parseFloat(this.getAttribute("volume"))); }
-      if (this.hasAttribute("autoplay") && this._audio && this._audio.src) {
-        var p = this._audio.play();
-        if (p && p.catch) { p.catch(function () {}); }
-      }
-    }
-
-    disconnectedCallback() {
-      this._stopFade();
-    }
-
-    attributeChangedCallback(nameAttr, oldV, newV) {
-      if (!this._built) { return; }
-      if (oldV === newV) { return; }
-      if (nameAttr === "src")    { this._setSrc(newV); }
-      if (nameAttr === "name")   { this._setName(newV); }
-      if (nameAttr === "volume") { this._setVolume(parseFloat(newV)); }
-    }
-
-    // ---- Propiedades JS normales ----
-    get src()  { return this._audio ? this._audio.src : this.getAttribute("src"); }
-    set src(v) { this.setAttribute("src", v == null ? "" : String(v)); }
-
-    get name()  { return this._name || ""; }
-    set name(v) { this.setAttribute("name", v == null ? "" : String(v)); }
-
-    get volume() { return this._audio ? this._audio.volume : 1; }
-    set volume(v) { this._setVolume(v); }
-
-    play()  { if (this._audio) { var p = this._audio.play(); if (p && p.catch) { p.catch(function () {}); } } }
-    pause() { if (this._audio) { this._audio.pause(); } }
-
-    // ---- Construcción del DOM (una sola vez) ----
-    _build() {
+      if (this._built) return;
+      this._build();
       this._built = true;
+      this._render();
+    }
 
-      var card = document.createElement("div");
-      card.className = "ap-card bg-dark text-light p-2";
+    attributeChangedCallback() {
+      if (this._built) this._render();
+    }
 
-      // Título tipo carrusel
-      var titleWrap = document.createElement("div");
-      titleWrap.className = "ap-title-wrap mb-2 text-info fw-semibold";
-      var track = document.createElement("span");
-      track.className = "ap-title-track";
-      track.textContent = "Reproductor Audio";
-      titleWrap.appendChild(track);
-      this._titleTrack = track;
+    // ---- Propiedades ----
+    get src()    { return this.getAttribute("src") || ""; }
+    set src(v)   { this.setAttribute("src", v); }
+    get song()   { return this.getAttribute("song") || ""; }
+    set song(v)  { this.setAttribute("song", v); }
+    get artist() { return this.getAttribute("artist") || ""; }
+    set artist(v){ this.setAttribute("artist", v); }
 
-      // Barra de progreso
-      var prog = document.createElement("input");
-      prog.type = "range";
-      prog.className = "form-range ap-range mb-1";
-      prog.min = "0"; prog.max = "100"; prog.value = "0"; prog.step = "0.1";
-      prog.setAttribute("aria-label", "Progreso de reproducción");
-      this._prog = prog;
+    _emit(name, detail) {
+      this.dispatchEvent(new CustomEvent(name, { detail: detail, bubbles: true }));
+    }
 
-      // Tiempos
-      var timeRow = document.createElement("div");
-      timeRow.className = "d-flex justify-content-between ap-time text-secondary mb-2";
-      var cur = document.createElement("span"); cur.textContent = "0:00";
-      var dur = document.createElement("span"); dur.textContent = "0:00";
-      timeRow.appendChild(cur); timeRow.appendChild(dur);
-      this._cur = cur; this._dur = dur;
+    _build() {
+      var self = this;
 
-      // Grupo de botones
-      var controls = document.createElement("div");
-      controls.className = "btn-group w-100";
-      controls.setAttribute("role", "group");
+      // Pestaña lateral (mostrar/ocultar)
+      var tab = el("button", "ap-tab btn btn-primary rounded-0 rounded-start d-flex align-items-center justify-content-center fs-5",
+                   { type: "button", title: "Ocultar / mostrar" });
+      tab.appendChild(icon("chevron-right"));
+      this._tab = tab;
+      this._tabIco = tab.firstChild;
+      tab.addEventListener("click", function () {
+        var hidden = self.classList.toggle("ap-hidden");
+        self._tabIco.className = "bi bi-chevron-" + (hidden ? "left" : "right");
+      });
 
-      var playBtn = mkBtn("▶", "Reproducir / Pausar", "btn-primary");
-      playBtn.classList.remove("btn-outline-light");
-      var volDown = mkBtn("🔉", "Bajar volumen de forma continua (clic para iniciar / parar)");
-      var volUp   = mkBtn("🔊", "Subir volumen de forma continua (clic para iniciar / parar)");
-      var muteBtn = mkBtn("🔇", "Silenciar / Activar sonido");
-      var dlBtn   = mkBtn("⬇", "Descargar la música", "btn-outline-info");
-      dlBtn.classList.remove("btn-outline-light");
+      // Tarjeta
+      var card = el("div", "ap-card bg-white shadow rounded-start p-3");
 
-      controls.appendChild(playBtn);
-      controls.appendChild(volDown);
-      controls.appendChild(volUp);
-      controls.appendChild(muteBtn);
-      controls.appendChild(dlBtn);
+      // Fila: info + descargar
+      var top = el("div", "d-flex align-items-start justify-content-between mb-2");
+      var info = el("div", "me-2 text-truncate");
+      this._song = el("div", "fw-semibold text-truncate");
+      this._artist = el("div", "small text-secondary text-truncate");
+      info.appendChild(this._song);
+      info.appendChild(this._artist);
 
-      this._playBtn = playBtn;
-      this._volDown = volDown;
-      this._volUp = volUp;
-      this._muteBtn = muteBtn;
+      var dl = el("button", "btn btn-sm btn-outline-primary border-0", { type: "button", title: "Descargar audio" });
+      dl.appendChild(icon("download"));
+      dl.addEventListener("click", function () {
+        var a = el("a");
+        a.href = self.src;
+        a.download = (self.song || "audio") + ".mp3";
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        self._emit("ap-download", { src: self.src });
+      });
+      top.appendChild(info); top.appendChild(dl);
 
-      // Elemento <audio> real (oculto)
-      var audio = document.createElement("audio");
-      audio.preload = "metadata";
-      audio.style.display = "none";
-      this._audio = audio;
+      // Barra de progreso (avanzar la música)
+      this._seek = el("input", "form-range", { type: "range", min: "0", max: "100", value: "0", step: "0.1", "aria-label": "Avanzar música" });
+      this._seek.addEventListener("input", function () {
+        if (self._audio.duration) self._audio.currentTime = (self._seek.value / 100) * self._audio.duration;
+      });
 
-      card.appendChild(titleWrap);
-      card.appendChild(prog);
-      card.appendChild(timeRow);
-      card.appendChild(controls);
-      card.appendChild(audio);
+      var times = el("div", "d-flex justify-content-between small text-secondary mb-2");
+      this._cur = el("span"); this._cur.textContent = "0:00";
+      this._dur = el("span"); this._dur.textContent = "0:00";
+      times.appendChild(this._cur); times.appendChild(this._dur);
+
+      // Controles
+      var row = el("div", "d-flex align-items-center justify-content-between");
+
+      var left = el("div", "d-flex align-items-center gap-1");
+      this._play = el("button", "btn btn-primary btn-sm d-flex align-items-center", { type: "button", title: "Reproducir / pausar" });
+      this._playIco = icon("play-fill"); this._playIco.classList.add("fs-5");
+      this._play.appendChild(this._playIco);
+      this._play.addEventListener("click", function () {
+        if (self._audio.paused) self._audio.play(); else self._audio.pause();
+      });
+
+      this._mute = el("button", "btn btn-danger btn-sm", { type: "button", title: "Silenciar" });
+      this._muteIco = icon("volume-up-fill");
+      this._mute.appendChild(this._muteIco);
+      this._mute.addEventListener("click", function () {
+        self._audio.muted = !self._audio.muted;
+        self._syncMute();
+      });
+      left.appendChild(this._play); left.appendChild(this._mute);
+
+      var right = el("div", "d-flex align-items-center gap-1");
+      this._down = el("button", "btn btn-outline-danger btn-sm", { type: "button", title: "Bajar volumen (clic inicia, clic detiene)" });
+      this._down.appendChild(icon("dash-lg"));
+      this._down.addEventListener("click", function () { self._startRamp(-1, self._down); });
+
+      this._vol = el("input", "form-range ap-vol", { type: "range", min: "0", max: "1", value: "1", step: "0.01", "aria-label": "Volumen" });
+      this._vol.addEventListener("input", function () {
+        self._audio.volume = parseFloat(self._vol.value);
+        if (self._audio.volume > 0 && self._audio.muted) self._audio.muted = false;
+        self._syncMute();
+      });
+
+      this._up = el("button", "btn btn-success btn-sm", { type: "button", title: "Subir volumen (clic inicia, clic detiene)" });
+      this._up.appendChild(icon("plus-lg"));
+      this._up.addEventListener("click", function () { self._startRamp(1, self._up); });
+
+      right.appendChild(this._down); right.appendChild(this._vol); right.appendChild(this._up);
+
+      row.appendChild(left); row.appendChild(right);
+
+      card.appendChild(top);
+      card.appendChild(this._seek);
+      card.appendChild(times);
+      card.appendChild(row);
+
+      // Audio
+      this._audio = el("audio", null, { preload: "metadata" });
+      this._audio.addEventListener("play",  function () { self._playIco.className = "bi bi-pause-fill fs-5"; self._emit("ap-play"); });
+      this._audio.addEventListener("pause", function () { self._playIco.className = "bi bi-play-fill fs-5"; self._emit("ap-pause"); });
+      this._audio.addEventListener("ended", function () { self._emit("ap-ended"); });
+      this._audio.addEventListener("loadedmetadata", function () { self._dur.textContent = fmt(self._audio.duration); });
+      this._audio.addEventListener("timeupdate", function () {
+        if (self._audio.duration) self._seek.value = (self._audio.currentTime / self._audio.duration) * 100;
+        self._cur.textContent = fmt(self._audio.currentTime);
+      });
+
+      this.appendChild(tab);
       this.appendChild(card);
-
-      this._wire();
+      this.appendChild(this._audio);
     }
 
-    // ---- Listeners (addEventListener, nunca onclick inline) ----
-    _wire() {
+    _render() {
+      this._song.textContent = this.song || "\u2014";
+      this._artist.textContent = this.artist || "\u2014";
+      if (this._audio.getAttribute("src") !== this.src) {
+        this._audio.src = this.src;
+      }
+    }
+
+    _syncMute() {
+      if (this._audio.muted || this._audio.volume === 0) {
+        this._muteIco.className = "bi bi-volume-mute-fill";
+        this._mute.className = "btn btn-danger btn-sm";
+      } else {
+        this._muteIco.className = "bi bi-volume-up-fill";
+        this._mute.className = "btn btn-outline-danger btn-sm";
+      }
+    }
+
+    _stopRamp() {
+      if (this._ramp) { clearInterval(this._ramp); this._ramp = null; this._rampDir = 0; }
+      this._up.className = "btn btn-success btn-sm";
+      this._down.className = "btn btn-outline-danger btn-sm";
+    }
+
+    _startRamp(dir, btn) {
       var self = this;
-      var audio = this._audio;
-
-      this._playBtn.addEventListener("click", function () {
-        if (audio.paused) {
-          var p = audio.play();
-          if (p && p.catch) { p.catch(function () {}); }
-        } else {
-          audio.pause();
-        }
-      });
-
-      audio.addEventListener("play", function () {
-        self._playBtn.textContent = "⏸";
-        self._titleTrack.classList.remove("ap-paused");
-        self._emit("play");
-      });
-      audio.addEventListener("pause", function () {
-        self._playBtn.textContent = "▶";
-        self._titleTrack.classList.add("ap-paused");
-        self._emit("pause");
-      });
-      audio.addEventListener("ended", function () {
-        self._playBtn.textContent = "▶";
-        self._emit("ended");
-      });
-      audio.addEventListener("loadedmetadata", function () {
-        self._dur.textContent = fmtTime(audio.duration);
-      });
-      audio.addEventListener("timeupdate", function () {
-        self._cur.textContent = fmtTime(audio.currentTime);
-        if (audio.duration) {
-          self._prog.value = String((audio.currentTime / audio.duration) * 100);
-        }
-      });
-      audio.addEventListener("volumechange", function () {
-        self._emit("volumechange", { volume: audio.volume, muted: audio.muted });
-      });
-      audio.addEventListener("error", function () {
-        self._emit("error", { src: audio.currentSrc || "" });
-      });
-
-      this._prog.addEventListener("input", function () {
-        if (audio.duration) {
-          audio.currentTime = (parseFloat(self._prog.value) / 100) * audio.duration;
-        }
-      });
-
-      this._muteBtn.addEventListener("click", function () {
-        audio.muted = !audio.muted;
-        self._muteBtn.classList.toggle("active", audio.muted);
-      });
-
-      // Volumen continuo: clic = iniciar; otro clic = parar.
-      this._volDown.addEventListener("click", function () {
-        self._toggleFade(-1);
-      });
-      this._volUp.addEventListener("click", function () {
-        self._toggleFade(1);
-      });
-
-      // Descarga: intenta bajar el archivo y además avisa a la app por evento.
-      this.querySelector(".btn-outline-info") &&
-      this._muteBtn && // (referencia segura, no imprescindible)
-      0; // noop para legibilidad
-      var dlBtn = this.querySelectorAll("button")[4];
-      if (dlBtn) {
-        dlBtn.addEventListener("click", function () {
-          self._download();
-        });
-      }
+      if (this._rampDir === dir) { this._stopRamp(); return; } // segundo clic = detener
+      this._stopRamp();
+      this._rampDir = dir;
+      if (dir > 0) this._up.className = "btn btn-success btn-sm";
+      else this._down.className = "btn btn-danger btn-sm";
+      this._ramp = setInterval(function () {
+        var v = self._audio.volume + dir * 0.03;
+        if (v <= 0) { v = 0; self._stopRamp(); }
+        if (v >= 1) { v = 1; self._stopRamp(); }
+        self._audio.volume = v;
+        self._vol.value = v;
+        if (v > 0 && self._audio.muted) self._audio.muted = false;
+        self._syncMute();
+      }, 120);
     }
+  }
 
-    // ---- Lógica de volumen continuo ----
-    _toggleFade(dir) {
-      // Si ya se estaba desvaneciendo en la misma dirección -> parar.
-      if (this._fadeDir === dir) { this._stopFade(); return; }
-      this._stopFade();
-      this._fadeDir = dir;
-      var self = this;
-      var audio = this._audio;
-      var btn = dir < 0 ? this._volDown : this._volUp;
-      btn.classList.add("active", "ap-fading");
-      this._fadeTimer = window.setInterval(function () {
-        var next = clamp(audio.volume + dir * 0.05, 0, 1);
-        audio.volume = next;
-        if ((dir < 0 && next <= 0) || (dir > 0 && next >= 1)) {
-          self._stopFade();   // llegó al límite, se detiene solo
-        }
-      }, 150);
-    }
-
-    _stopFade() {
-      if (this._fadeTimer) {
-        window.clearInterval(this._fadeTimer);
-        this._fadeTimer = null;
-      }
-      this._fadeDir = 0;
-      if (this._volDown) { this._volDown.classList.remove("active", "ap-fading"); }
-      if (this._volUp)   { this._volUp.classList.remove("active", "ap-fading"); }
-    }
-
-    // ---- Descarga ----
-    _download() {
-      var audio = this._audio;
-      var url = audio ? (audio.currentSrc || audio.src) : "";
-      this._emit("download", { src: url, name: this._name || "" });
-      if (!url) { return; }
-      var a = document.createElement("a");
-      a.href = url;
-      a.download = (this._name || "audio").replace(/[\\/:*?"<>|]+/g, "_");
-      a.rel = "noopener";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    }
-
-    // ---- Setters internos ----
-    _setSrc(v) {
-      this._stopFade();
-      this._audio.src = v || "";
-      this._prog.value = "0";
-      this._cur.textContent = "0:00";
-      this._dur.textContent = "0:00";
-      if (!this._name && v) {
-        var clean = String(v).split("?")[0].split("/").pop();
-        this._setName(decodeURIComponent(clean || ""));
-      }
-    }
-
-    _setName(v) {
-      this._name = v || "";
-      this._titleTrack.textContent = this._name || "Reproductor Audio";
-    }
-
-    _setVolume(v) {
-      if (isNaN(v)) { return; }
-      this._audio.volume = clamp(v, 0, 1);
-    }
-
-    // ---- Emisor de eventos ----
-    _emit(type, detail) {
-      this.dispatchEvent(new CustomEvent(type, {
-        detail: detail || {},
-        bubbles: true
-      }));
-    }
-  };
-
-  customElements.define("audio-player", AudioPlayer);
-
+  if (!customElements.get("audio-player")) {
+    customElements.define("audio-player", AudioPlayer);
+  }
 })();
