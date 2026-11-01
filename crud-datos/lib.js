@@ -168,6 +168,8 @@
         validate: null, canAdd: null, canEdit: null, canDelete: null,
         confirmDelete: null, idGenerator: null
       };
+      this._observer = null;
+      this._paintQueued = false;
     }
 
     /* ---- ciclo de vida ---- */
@@ -179,6 +181,7 @@
       if (this._ready) this._render();
     }
     disconnectedCallback() {
+      if (this._observer) { this._observer.disconnect(); this._observer = null; }
       if (this._table && this._onTableClick) {
         this._table.removeEventListener("rowclick", this._onTableClick);
       }
@@ -371,6 +374,7 @@
       tbl.setAttribute("paginated", "");
       tbl.setAttribute("striped", "");
       if (this.hasAttribute("page-size")) tbl.setAttribute("page-size", this.getAttribute("page-size"));
+      tbl.setAttribute("id-key", this.idKey);
       if (this.hasAttribute("table-hover")) tbl.setAttribute("hover", "");
       if (this.hasAttribute("table-bordered")) tbl.setAttribute("bordered", "");
       if (isTrueAttr(this, "dense")) tbl.setAttribute("size", "sm");
@@ -394,6 +398,7 @@
       this.appendChild(tbl);
 
       this._paintActions(rows);
+      this._observeTable();
     }
 
     /* Columna "virtual" de acciones: data-table solo pinta texto, así que
@@ -408,23 +413,84 @@
       };
     }
 
+    /* Vigila la tabla para REPINTAR las acciones cada vez que se vuelve a
+       dibujar por dentro (paginación, orden, búsqueda): la tabla no avisa
+       de esos cambios, así que observamos su DOM. Observamos el propio
+       elemento tabla porque al repintarse reemplaza TODO su contenido
+       (incluido el tbody), no solo las filas.                            */
+    _observeTable() {
+      if (!this._table || typeof MutationObserver === "undefined") return;
+      var self = this;
+      if (!this._observer) {
+        this._observer = new MutationObserver(function () { self._paintSoon(); });
+      }
+      try {
+        this._observer.disconnect();
+        this._observer.observe(this._table, { childList: true, subtree: true });
+      } catch (e) { /* entornos sin soporte: se ignora */ }
+    }
+
+    /* Agrupa varios avisos seguidos en un solo repintado. */
+    _paintSoon() {
+      var self = this;
+      if (this._paintQueued) return;
+      this._paintQueued = true;
+      var run = function () { self._paintQueued = false; self._paintActions(); };
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+      else setTimeout(run, 0);
+    }
+
     /* Tras pintar data-table, sustituimos la última celda de cada fila
-       por el grupo de botones (Editar / Duplicar / Eliminar).          */
+       por el grupo de botones (Editar / Duplicar / Eliminar).
+       Empareja cada fila visible con su registro real por id (no por
+       posición), porque la tabla puede ordenar/paginar y el orden ya no
+       coincide con this._data. Pausa el observador mientras escribe para
+       no realimentarse en bucle.                                        */
     _paintActions(viewRows) {
       if (!this._table) return;
-      var list = viewRows || this._processRows(this._data);
       var tbody = this._table.querySelector("tbody");
       if (!tbody) return;
+      if (this._observer) { try { this._observer.disconnect(); } catch (e) {} }
+      var list = viewRows || this._processRows(this._data);
       var trs = tbody.querySelectorAll("tr");
-      for (var i = 0; i < trs.length && i < list.length; i++) {
-        var tds = trs[i].querySelectorAll("td");
-        if (!tds.length) continue;
-        var celda = tds[tds.length - 1];   // la ultima celda es la de acciones
+      for (var i = 0; i < trs.length; i++) {
+        var celda = trs[i].lastElementChild;
+        if (!celda) continue;
+        // Restaurar el marcador si aún es el texto plano "…" de la tabla
+        if (!celda.classList.contains("crud-actions-cell")) {
+          celda.classList.add("crud-actions-cell", "text-end");
+        }
         celda.textContent = "";
         celda.classList.add("text-end");
-        var caja = this._actionCell(list[i]);
+        // 1) id real estampado por la tabla (si esa versión lo aporta)
+        var idVal = celda.getAttribute("data-crud-id");
+        if (idVal == null) idVal = trs[i].getAttribute("data-row-id");
+        var fila = null;
+        // 2) respaldo: identificar la fila comparando el texto de las celdas
+        if (idVal == null) {
+          var tds = trs[i].querySelectorAll("td");
+          var textos = [];
+          for (var t = 0; t < tds.length - 1; t++) textos.push((tds[t].textContent || "").trim());
+          for (var k = 0; k < list.length; k++) {
+            var igual = true;
+            for (var c = 0; c < this._cols.length; c++) {
+              var col = this._cols[c];
+              if (!col || col.key === "_crud_actions") continue;
+              var esperado = col.format ? String(col.format(list[k], list[k][col.key])).trim()
+                                        : String(list[k][col.key] == null ? "" : list[k][col.key]).trim();
+              if (textos[c] != null && textos[c] !== esperado) { igual = false; break; }
+            }
+            if (igual) { fila = list[k]; break; }
+          }
+          if (fila) idVal = getField(fila, this.idKey);
+        } else {
+          fila = this.findRow(idVal);
+        }
+        if (!fila) continue;
+        var caja = this._actionCell(fila);
         if (caja.childNodes.length) celda.appendChild(caja);
       }
+      this._observeTable();
     }
 
     _actionCell(row) {
