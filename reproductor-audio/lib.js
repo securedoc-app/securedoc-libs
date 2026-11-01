@@ -1,7 +1,13 @@
 /*
- * Reproductor Audio — <audio-player>
- * Librería reutilizable (Web Component nativo, sin Shadow DOM).
+ * <audio-player> — Reproductor de audio compacto (Web Component, sin Shadow DOM).
  * Hereda Bootstrap 5 de la página anfitriona y usa sus clases de color.
+ *
+ * Uso:
+ *   <audio-player
+ *     src="https://.../cancion.mp3"
+ *     song="La Ronda"
+ *     artist="Nación Ekeko"></audio-player>
+ *
  * Requiere Bootstrap 5 CSS/JS y Bootstrap Icons cargados en la página.
  */
 (function () {
@@ -65,6 +71,14 @@
     _emit(name, detail) {
       this.dispatchEvent(new CustomEvent(name, { detail: detail, bubbles: true }));
     }
+
+    // ---- Control programático (la app puede iniciar/pausar la reproducción) ----
+    play() {
+      if (!this._audio) return;
+      var p = this._audio.play();
+      if (p && p.catch) p.catch(function () {}); // el navegador puede bloquear autoplay sin gesto
+    }
+    pause() { if (this._audio) this._audio.pause(); }
 
     _build() {
       var self = this;
@@ -203,6 +217,7 @@
       if (this._rampDir === dir) { this._stopRamp(); return; } // segundo clic = detener
       this._stopRamp();
       this._rampDir = dir;
+      // El botón activo se resalta en sólido
       if (dir > 0) this._up.className = "btn btn-success btn-sm";
       else this._down.className = "btn btn-danger btn-sm";
       this._ramp = setInterval(function () {
