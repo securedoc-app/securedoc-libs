@@ -21,11 +21,12 @@
 
   if (window.customElements && customElements.get("crud-data")) return;
 
-  /* Versión con las correcciones de acciones (botones al paginar), la
-     apertura de formulario (Editar/Agregar) y los botones de acción con
-     ICONOS de Bootstrap Icons + tooltips. Sirve de sello para verificar
-     en consola que el navegador NO está usando una copia vieja. */
-  var CRUD_DATOS_VERSION = "1.2.0-iconos";
+  /* Versión con: correcciones de acciones (botones al paginar), apertura
+     de formulario (Editar/Agregar), botones con ICONOS de Bootstrap Icons
+     + tooltips, y búsqueda que NO pierde el foco con retardo entre teclas.
+     Sirve de sello para verificar en consola que el navegador NO está
+     usando una copia vieja. */
+  var CRUD_DATOS_VERSION = "1.2.1-foco-busqueda";
   try {
     if (window.console && console.log) {
       console.log("%c[crud-datos] versión " + CRUD_DATOS_VERSION + " cargada correctamente",
@@ -451,7 +452,15 @@
       }
       try {
         this._observer.disconnect();
-        this._observer.observe(this._table, { childList: true, subtree: true });
+        this._observer.observe(this._table, {
+          childList: true,
+          subtree: true,
+          // Nos interesan solo los nodos: NO observamos los cambios de
+          // valor de los campos (si no, escribir en la caja de busqueda
+          // disparaba repintados y hacia perder el foco).
+          attributes: false,
+          characterData: false
+        });
       } catch (e) { /* entornos sin soporte: se ignora */ }
     }
 
