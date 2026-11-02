@@ -172,7 +172,7 @@
 
   /* Versión del componente. Permite comprobar en consola que el navegador
      NO está sirviendo una copia vieja del CDN. */
-  var TABLA_DATOS_VERSION = "1.2.1-foco-busqueda";
+  var TABLA_DATOS_VERSION = "1.2.2-foco-fijo";
   try {
     if (window.console && console.log) {
       console.log("%c[tabla-de-datos] versión " + TABLA_DATOS_VERSION + " cargada correctamente",
@@ -261,7 +261,8 @@
     clearFilters() {
       this._search = ""; this._page = 1;
       if (this._searchTimer) { clearTimeout(this._searchTimer); this._searchTimer = null; }
-      this._render();
+      if (this._searchInput) this._searchInput.value = "";
+      this._renderData();
       this._focusSearch();
     }
 
@@ -328,7 +329,7 @@
       else if (this._sortDir === -1) { this._sortKey = null; this._sortDir = 0; }
       else { this._sortDir = 1; }
       this._emit("sort", { key: this._sortKey, dir: this._sortDir });
-      this._render();
+      this._renderData();
     }
 
     _onSearch(value) {
@@ -345,7 +346,7 @@
         self._searchTimer = null;
         var tokens = self._search.toLowerCase().split(/\s+/).filter(Boolean);
         self._emit("filter", { search: self._search, tokens: tokens });
-        self._render();
+        self._renderData();
       };
       if (delay > 0) this._searchTimer = setTimeout(run, delay);
       else run();
@@ -482,6 +483,24 @@
         wrap.appendChild(tb);
       }
 
+      // Región de datos: contenedor PERSISTENTE. Al buscar / ordenar /
+      // paginar se vuelve a dibujar SOLO esto (tabla + paginación), sin
+      // tocar la barra de herramientas ni la caja de búsqueda. Así la
+      // caja nunca se destruye y el foco del usuario NO se pierde.
+      this._dataRegion = el("div", { class: "data-table-region" });
+      wrap.appendChild(this._dataRegion);
+      this.appendChild(wrap);
+      this._renderData();
+    }
+
+    /* Vuelve a dibujar SOLO la tabla + paginación dentro de la región de
+       datos. No reconstruye la barra de herramientas ni la caja de
+       búsqueda: por eso al escribir no se pierde el foco.              */
+    _renderData() {
+      if (!this._dataRegion) { this._render(); return; }
+      var self = this;
+      this._dataRegion.textContent = "";
+
       // tabla
       var view = this._computeView();
       var cls = "table";
@@ -579,7 +598,7 @@
       }
       table.appendChild(tbody);
 
-      wrap.appendChild(el("div", { class: "table-responsive" }, [table]));
+      this._dataRegion.appendChild(el("div", { class: "table-responsive" }, [table]));
 
       // paginación
       if (isTrueAttr(this, "paginated") && view.total) {
@@ -593,23 +612,16 @@
         nav.appendChild(el("button", {
           class: "btn btn-outline-secondary", attrs: { type: "button" },
           props: { disabled: view.page <= 1 }, text: "‹ Anterior",
-          on: { click: function () { self._page = view.page - 1; self._render(); } }
+          on: { click: function () { self._page = view.page - 1; self._renderData(); } }
         }));
         nav.appendChild(el("button", {
           class: "btn btn-outline-secondary", attrs: { type: "button" },
           props: { disabled: view.page >= view.pages }, text: "Siguiente ›",
-          on: { click: function () { self._page = view.page + 1; self._render(); } }
+          on: { click: function () { self._page = view.page + 1; self._renderData(); } }
         }));
         foot.appendChild(nav);
-        wrap.appendChild(foot);
+        this._dataRegion.appendChild(foot);
       }
-
-      this.appendChild(wrap);
-
-      /* Si el usuario estaba escribiendo en la caja de busqueda, le
-         devolvemos el foco y el cursor al final. Sin esto, cada tecla
-         redibuja la tabla, borra la caja y el foco se pierde.           */
-      if (this._searchFocus && this._searchInput) this._focusSearch();
     }
   };
 
