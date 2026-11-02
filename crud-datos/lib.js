@@ -26,7 +26,7 @@
      + tooltips, y búsqueda que NO pierde el foco con retardo entre teclas.
      Sirve de sello para verificar en consola que el navegador NO está
      usando una copia vieja. */
-  var CRUD_DATOS_VERSION = "1.2.1-foco-busqueda";
+  var CRUD_DATOS_VERSION = "1.2.2-foco-fijo";
   try {
     if (window.console && console.log) {
       console.log("%c[crud-datos] versión " + CRUD_DATOS_VERSION + " cargada correctamente",
